@@ -1,0 +1,59 @@
+name: 每日自动收集标书并发布看板
+
+on:
+  schedule:
+    # GitHub 用 UTC 时间;01:00 UTC = 香港时间 09:00
+    - cron: "0 1 * * *"
+  # 允许手动触发(在 Actions 页面点 Run workflow 立即刷新一次)
+  workflow_dispatch:
+  # 首次上传/每次改动代码后也自动跑一次
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 运行收集程序
+        run: python collector.py
+
+      - name: 整理发布内容
+        run: |
+          mkdir -p _site
+          cp dashboard.html _site/index.html
+          cp dashboard.html _site/dashboard.html
+          # 附带当天的数据存档(可选,方便回溯)
+          cp -r data _site/data 2>/dev/null || true
+
+      - name: 上传到 Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 发布到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
