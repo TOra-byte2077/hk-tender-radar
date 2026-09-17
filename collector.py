@@ -31,6 +31,13 @@ os.makedirs(DATA_DIR, exist_ok=True)
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
+# 各数据源的抓取状态(显示在看板上,便于发现某个源失效)
+SOURCE_STATUS = []
+
+
+def report(name, ok, count=0, note=""):
+    SOURCE_STATUS.append({"name": name, "ok": ok, "count": count, "note": note})
+
 # ---------------------------------------------------------------
 # 行业关键词打分(可自定义!)
 # 首次运行会在本目录生成 keywords.json,直接编辑该文件即可
@@ -151,8 +158,10 @@ def fetch_gld():
                 "contact": " / ".join(x for x in [g("TelephoneNumber"), g("Email")] if x),
             })
         print(f"  [OK] 政府电子投标箱: {len(out)} 条")
+        report("政府电子投标箱 (GLD)", True, len(out))
     except Exception as e:
         print(f"  [失败] 政府电子投标箱: {e}")
+        report("政府电子投标箱 (GLD)", False, note=str(e)[:60])
     return out
 
 
@@ -191,8 +200,10 @@ def fetch_archsd():
                 "contact": "",
             })
         print(f"  [OK] 建筑署: {len(out)} 条")
+        report("建筑署 (ArchSD)", True, len(out))
     except Exception as e:
         print(f"  [失败] 建筑署: {e}")
+        report("建筑署 (ArchSD)", False, note=str(e)[:60])
     return out
 
 
@@ -225,8 +236,10 @@ def fetch_wkcda():
                 "contact": "",
             })
         print(f"  [OK] 西九文化区: {len(out)} 条进行中")
+        report("西九文化区 WKProcure", True, len(out))
     except Exception as e:
         print(f"  [跳过] 西九文化区(该站有防火墙,可手动查看): {e.__class__.__name__}")
+        report("西九文化区 WKProcure", False, note="站点防火墙拦截,请手动查看")
     return out
 
 
@@ -258,20 +271,109 @@ def fetch_hkstp():
                 "contact": "",
             })
         print(f"  [OK] 香港科技园: {len(out)} 条")
+        report("香港科技园 (HKSTP)", True, len(out))
     except Exception as e:
         print(f"  [跳过] 香港科技园: {e.__class__.__name__}")
+        report("香港科技园 (HKSTP)", False, note=str(e.__class__.__name__))
     return out
 
 
 # ---------------------------------------------------------------
-# 数据源 5: Google News RSS —— 监控私营企业/上市公司的招标新闻
+# 数据源 5: 金管局 HKMA 招标公告(官方 API)
+# ---------------------------------------------------------------
+def fetch_hkma():
+    out = []
+    try:
+        raw = http_get("https://api.hkma.gov.hk/public/tender-invitations"
+                       "?lang=tc&segment=tender&pagesize=50")
+        data = json.loads(raw)
+        for r in (data.get("result") or {}).get("records", []):
+            title = str(r.get("title") or r.get("subject") or "").strip()
+            if not title:
+                continue
+            out.append({
+                "source": "金管局 (HKMA)",
+                "org": "香港金融管理局",
+                "ref": str(r.get("ref_no") or ""),
+                "title": title,
+                "title_en": "",
+                "issue_date": str(r.get("issue_date") or "")[:10],
+                "closing": str(r.get("closing_date") or "")[:16],
+                "link": str(r.get("link") or "https://www.hkma.gov.hk/chi/other-information/tender-invitations/"),
+                "contact": "",
+            })
+        print(f"  [OK] 金管局: {len(out)} 条")
+        report("金管局 (HKMA)", True, len(out))
+    except Exception as e:
+        print(f"  [跳过] 金管局: {e.__class__.__name__}")
+        report("金管局 (HKMA)", False, note=str(e.__class__.__name__))
+    return out
+
+
+# ---------------------------------------------------------------
+# 数据源 6: 政府新闻公报 RSS(中英双语)
+# 部门签约/招标/资格预审的新闻稿常在这里首发,可提前发现机会
+# ---------------------------------------------------------------
+def fetch_gov_press():
+    out = []
+    feeds = [
+        ("https://www.info.gov.hk/gia/rss/general_zh.xml",
+         ("招標", "投標", "標書", "資格預審", "意向書", "採購")),
+        ("https://www.info.gov.hk/gia/rss/general_en.xml",
+         ("tender", "prequalification", "expression of interest",
+          "procurement", "request for proposal")),
+    ]
+    for url, words in feeds:
+        try:
+            raw = http_get(url)
+            root = ET.fromstring(raw)
+            for item in root.iter("item"):
+                title = (item.findtext("title") or "").strip()
+                link = (item.findtext("link") or "").strip()
+                tl = title.lower()
+                if not title or not any(w.lower() in tl for w in words):
+                    continue
+                # 排除金融市场类噪音(外汇基金票据/债券投标结果等)
+                if any(w in title for w in ("外匯基金", "外汇基金", "債券", "债券",
+                                            "Exchange Fund", "票據", "票据")):
+                    continue
+                pub = (item.findtext("pubDate") or "").strip()
+                try:
+                    from email.utils import parsedate_to_datetime
+                    pub_str = parsedate_to_datetime(pub).strftime("%Y-%m-%d")
+                except Exception:
+                    pub_str = ""
+                out.append({
+                    "source": "政府新闻公报 (ISD)",
+                    "org": "",
+                    "ref": "",
+                    "title": title,
+                    "title_en": "",
+                    "issue_date": pub_str,
+                    "closing": "",
+                    "link": link,
+                    "contact": "",
+                })
+        except Exception as e:
+            print(f"  [跳过] 政府新闻公报: {e.__class__.__name__}")
+    # 去重(中英稿可能重复报道同一事件,保留标题不同的)
+    print(f"  [OK] 政府新闻公报: {len(out)} 条含招标关键词")
+    report("政府新闻公报 (ISD)", True, len(out))
+    return out
+
+
+# ---------------------------------------------------------------
+# 数据源 7: Google News RSS —— 监控私营企业/上市公司的招标新闻
 # 私企发标渠道分散(自家官网、报纸公告、邮件邀请),
 # 但大项目往往会见报或发新闻稿,用新闻监控可以捕获一部分
 # ---------------------------------------------------------------
 NEWS_QUERIES = [
-    # (显示名, 查询词)
+    # (显示名, 查询词) —— 覆盖面越广越不容易漏,靠标题过滤去噪
     ("招标新闻监控", '"招標" OR "投標" 香港 (展覽 OR 博物館 OR 多媒體 OR 體驗館)'),
     ("招标新闻监控", '"invitation to tender" OR "request for proposal" Hong Kong (exhibition OR museum OR immersive OR multimedia)'),
+    ("招标新闻监控", '香港 (招標 OR 標書) (商場 OR 地產 OR 活動 OR 燈光 OR 文化)'),
+    ("招标新闻监控", 'Hong Kong tender (mall OR property OR event OR attraction OR "theme park")'),
+    ("招标新闻监控", '(西九 OR M+ OR 故宮 OR 康文署 OR 旅發局 OR 貿發局) 招標'),
 ]
 
 
@@ -320,6 +422,7 @@ def fetch_news_rss():
         except Exception as e:
             print(f"  [跳过] 新闻监控({label}): {e.__class__.__name__}")
     print(f"  [OK] 新闻监控(私企/上市公司): {len(out)} 条")
+    report("新闻监控 (Google News)", True, len(out))
     return out
 
 
@@ -329,8 +432,23 @@ def fetch_news_rss():
 def collect():
     print("开始收集香港标书信息 ...")
     tenders = []
-    for fn in (fetch_gld, fetch_archsd, fetch_wkcda, fetch_hkstp, fetch_news_rss):
+    for fn in (fetch_gld, fetch_archsd, fetch_wkcda, fetch_hkstp,
+               fetch_hkma, fetch_gov_press, fetch_news_rss):
         tenders.extend(fn())
+
+    # 可选:浏览器自动化源(康文署等动态/反爬网站)
+    # 本地没装 Playwright 会自动跳过;GitHub Actions 上自动启用
+    try:
+        import browser_sources
+        bt, bs = browser_sources.fetch_all()
+        tenders.extend(bt)
+        SOURCE_STATUS.extend(bs)
+    except ImportError:
+        print("  [提示] 未安装 Playwright,跳过浏览器抓取源(康文署等)。"
+              "安装方法见 browser_sources.py 顶部说明")
+    except Exception as e:
+        print(f"  [跳过] 浏览器抓取源: {e.__class__.__name__}")
+        report("浏览器抓取源", False, note=str(e.__class__.__name__)[:40])
 
     today = date.today()
     seen = set()
@@ -368,11 +486,13 @@ def collect():
 # ---------------------------------------------------------------
 def build_dashboard(tenders):
     payload = json.dumps(tenders, ensure_ascii=False)
+    status_json = json.dumps(SOURCE_STATUS, ensure_ascii=False)
     kw_json = json.dumps({str(k): v for k, v in KEYWORDS.items()}, ensure_ascii=False)
     updated = datetime.now().strftime("%Y-%m-%d %H:%M")
     n_rel = sum(1 for t in tenders if t["score"] > 0)
     html = DASHBOARD_TEMPLATE.replace("__DATA__", payload) \
                              .replace("__KEYWORDS__", kw_json) \
+                             .replace("__STATUS__", status_json) \
                              .replace("__LABEL__", INDUSTRY_LABEL) \
                              .replace("__UPDATED__", updated) \
                              .replace("__TOTAL__", str(len(tenders))) \
@@ -457,7 +577,7 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 <body>
 <div class="wrap">
   <h1>香港标书雷达 <span class="radar">◎</span></h1>
-  <div class="meta">最后更新:__UPDATED__ · 运行 collector.py 即可刷新数据</div>
+  <div class="meta">最后更新:__UPDATED__ · 运行 collector.py 即可刷新数据 · <span id="srcStatus"></span></div>
 
   <div class="stats">
     <div class="stat"><b>__TOTAL__</b><span>进行中标书</span></div>
@@ -505,7 +625,8 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
     自动数据来源:政府物流服务署电子投标箱(官方开放数据)、建筑署、西九文化区 WKProcure、香港科技园、Google News 招标新闻监控。<br><br>
     <b style="color:var(--txt)">公营机构补充源</b>(部分网站有反爬,建议每周手动看一次):
     <a href="https://www.westk.hk/en/tender-notices-expression-interest-0" target="_blank">西九文化区官网</a> ·
-    <a href="https://www.lcsd.gov.hk/en/aboutlcsd/tender.html" target="_blank">康文署(博物馆展览大户)</a> ·
+    <a href="https://www.lcsd.gov.hk/clpss/tc/webApp/Tender.do" target="_blank">康文署招标/报价列表(博物馆展览大户)</a> ·
+    <a href="https://www.lcsd.gov.hk/clpss/tc/webApp/NoticeList.do" target="_blank">康文署通知名单(加入报价邀请!)</a> ·
     <a href="https://home.hktdc.com/en/s/tender-notices" target="_blank">贸发局 HKTDC(会展大户)</a> ·
     <a href="https://www.cyberport.hk/en/about_cyberport/tender_notice" target="_blank">数码港</a> ·
     <a href="https://www.discoverhongkong.com/eng/hktb/tenders.html" target="_blank">旅发局</a> ·
@@ -526,7 +647,22 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 <script>
 const DATA = __DATA__;
 const DEFAULT_KW = __KEYWORDS__;
+const SRC_STATUS = __STATUS__;
 const DEFAULT_LABEL = "__LABEL__";
+
+// 数据源状态摘要(有失败的源时醒目提示)
+(function(){
+  const el = document.getElementById("srcStatus");
+  if(!el || !SRC_STATUS.length) return;
+  const bad = SRC_STATUS.filter(s=>!s.ok);
+  const okTxt = SRC_STATUS.filter(s=>s.ok).map(s=>s.name+"("+s.count+")").join(" · ");
+  if(bad.length){
+    el.innerHTML = '<span style="color:#d64545">⚠ '+bad.map(s=>s.name).join("、")
+      +' 本次抓取失败,请到看板底部手动查看</span> · 正常源: '+okTxt;
+  } else {
+    el.textContent = "全部数据源正常: " + okTxt;
+  }
+})();
 let mode = "all";
 const $ = id => document.getElementById(id);
 let stars = {};
