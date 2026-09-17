@@ -31,6 +31,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: 安装 Playwright(浏览器抓取康文署等反爬网站)
+        run: |
+          pip install playwright
+          python -m playwright install chromium --with-deps
+
       - name: 运行收集程序
         run: python collector.py
 
