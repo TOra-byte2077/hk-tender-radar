@@ -453,7 +453,13 @@ def collect():
         print(f"  [跳过] 浏览器抓取源: {e.__class__.__name__}")
         report("浏览器抓取源", False, note=str(e.__class__.__name__)[:40])
 
-    today = date.today()
+    # 用香港日期计算剩余天数(避免云端 UTC 时区导致差一天)
+    try:
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+    except Exception:
+        from datetime import timezone, timedelta
+        today = datetime.now(timezone(timedelta(hours=8))).date()
     seen = set()
     result = []
     for t in tenders:
@@ -495,7 +501,14 @@ def build_dashboard(tenders):
     import hashlib
     pw_hash = (hashlib.sha256(PAGE_PASSWORD.encode("utf-8")).hexdigest()
                if PAGE_PASSWORD else "")
-    updated = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # 统一用香港时间显示(无论在哪台机器/哪个时区运行)
+    try:
+        from zoneinfo import ZoneInfo
+        now_hk = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    except Exception:
+        from datetime import timezone, timedelta
+        now_hk = datetime.now(timezone(timedelta(hours=8)))
+    updated = now_hk.strftime("%Y-%m-%d %H:%M") + "(香港时间)"
     n_rel = sum(1 for t in tenders if t["score"] > 0)
     html = DASHBOARD_TEMPLATE.replace("__DATA__", payload) \
                              .replace("__KEYWORDS__", kw_json) \
@@ -509,7 +522,7 @@ def build_dashboard(tenders):
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
     # 同时留一份 JSON 存档(带日期,方便回溯)
-    with open(os.path.join(DATA_DIR, f"tenders_{date.today().isoformat()}.json"),
+    with open(os.path.join(DATA_DIR, f"tenders_{now_hk.date().isoformat()}.json"),
               "w", encoding="utf-8") as f:
         f.write(payload)
     return out
