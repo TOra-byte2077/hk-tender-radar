@@ -67,14 +67,17 @@ DEFAULT_KEYWORDS = {
 
 KEYWORDS_FILE = os.path.join(BASE_DIR, "keywords.json")
 DEFAULT_LABEL = "展览 / VR / AR"
+PAGE_PASSWORD = ""   # 看板访问密码;留空 = 不设密码。也可在 keywords.json 里加 "password" 字段
 
 
 def load_keywords():
     """读取 keywords.json;不存在则用默认值创建它。返回 (关键词dict, 行业标签)"""
+    global PAGE_PASSWORD
     try:
         with open(KEYWORDS_FILE, encoding="utf-8") as f:
             data = json.load(f)
         label = str(data.get("label") or DEFAULT_LABEL)
+        PAGE_PASSWORD = str(data.get("password") or PAGE_PASSWORD or "")
         kw = {}
         for k, v in data.items():
             if k == "label":
@@ -488,6 +491,10 @@ def build_dashboard(tenders):
     payload = json.dumps(tenders, ensure_ascii=False)
     status_json = json.dumps(SOURCE_STATUS, ensure_ascii=False)
     kw_json = json.dumps({str(k): v for k, v in KEYWORDS.items()}, ensure_ascii=False)
+    # 密码只嵌入 SHA-256 哈希,不嵌明文
+    import hashlib
+    pw_hash = (hashlib.sha256(PAGE_PASSWORD.encode("utf-8")).hexdigest()
+               if PAGE_PASSWORD else "")
     updated = datetime.now().strftime("%Y-%m-%d %H:%M")
     n_rel = sum(1 for t in tenders if t["score"] > 0)
     html = DASHBOARD_TEMPLATE.replace("__DATA__", payload) \
@@ -496,7 +503,8 @@ def build_dashboard(tenders):
                              .replace("__LABEL__", INDUSTRY_LABEL) \
                              .replace("__UPDATED__", updated) \
                              .replace("__TOTAL__", str(len(tenders))) \
-                             .replace("__REL__", str(n_rel))
+                             .replace("__REL__", str(n_rel)) \
+                             .replace("__PWHASH__", pw_hash)
     out = os.path.join(BASE_DIR, "dashboard.html")
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
@@ -569,12 +577,41 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
   .kwactions{display:flex;gap:10px;flex-wrap:wrap}
   .btn.primary{background:var(--acc);color:#fff;border-color:var(--acc);font-weight:600}
   .btn.danger{color:var(--warn)}
+  /* ---- 密码锁(日记簿式) ---- */
+  #lock{position:fixed;inset:0;background:var(--bg);z-index:9999;
+        display:flex;align-items:center;justify-content:center}
+  .lockbox{background:var(--card);border:1px solid var(--line);border-radius:16px;
+        padding:36px 40px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.12);
+        max-width:340px;width:90%}
+  .lockbox .icon{font-size:40px;margin-bottom:10px}
+  .lockbox h2{font-size:18px;margin-bottom:6px}
+  .lockbox p{color:var(--sub);font-size:13px;margin-bottom:18px}
+  .lockbox input{width:100%;text-align:center;letter-spacing:4px;font-size:18px;
+        background:var(--card2);color:var(--txt);border:1px solid var(--line);
+        border-radius:10px;padding:12px;outline:none;margin-bottom:14px}
+  .lockbox input:focus{border-color:var(--acc)}
+  .lockbox .go{width:100%;background:var(--acc);color:#fff;border:none;border-radius:10px;
+        padding:12px;font-size:15px;font-weight:600;cursor:pointer}
+  .lockbox .err{color:var(--warn);font-size:12.5px;height:18px;margin-top:10px}
+  .lockbox.shake{animation:shake .4s}
+  @keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-8px)}
+        40%,80%{transform:translateX(8px)}}
   .empty{color:var(--sub);text-align:center;padding:40px 0}
   .foot{color:var(--sub);font-size:12px;margin-top:24px;line-height:1.8}
   .foot a{color:var(--acc)}
 </style>
 </head>
 <body>
+<div id="lock" style="display:none">
+  <div class="lockbox" id="lockbox">
+    <div class="icon">🔒</div>
+    <h2>香港标书雷达</h2>
+    <p>此看板已加锁,请输入访问密码</p>
+    <input type="password" id="pwInput" placeholder="········" autocomplete="off">
+    <button class="go" id="pwGo">解锁</button>
+    <div class="err" id="pwErr"></div>
+  </div>
+</div>
 <div class="wrap">
   <h1>香港标书雷达 <span class="radar">◎</span></h1>
   <div class="meta">最后更新:__UPDATED__ · 运行 collector.py 即可刷新数据 · <span id="srcStatus"></span></div>
@@ -649,6 +686,47 @@ const DATA = __DATA__;
 const DEFAULT_KW = __KEYWORDS__;
 const SRC_STATUS = __STATUS__;
 const DEFAULT_LABEL = "__LABEL__";
+const PW_HASH = "__PWHASH__";
+
+// ---------- 密码锁(日记簿式) ----------
+(function(){
+  if(!PW_HASH) return;                       // 未设密码,直接进
+  let saved = "";
+  try { saved = sessionStorage.getItem("hkpw") || ""; } catch(e){}
+  if(saved === PW_HASH) return;              // 本次浏览已解锁过
+  const lock = document.getElementById("lock");
+  lock.style.display = "flex";
+  document.querySelector(".wrap").style.display = "none";
+
+  async function sha256(s){
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+    return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
+  }
+  async function tryUnlock(){
+    const v = document.getElementById("pwInput").value;
+    if(!v) return;
+    let h = "";
+    try { h = await sha256(v); }
+    catch(e){  // 极旧浏览器或非 https 环境无 SubtleCrypto,提示改用 https
+      document.getElementById("pwErr").textContent = "浏览器不支持,请用 https 链接打开";
+      return;
+    }
+    if(h === PW_HASH){
+      try { sessionStorage.setItem("hkpw", h); } catch(e){}
+      lock.style.display = "none";
+      document.querySelector(".wrap").style.display = "";
+    } else {
+      const box = document.getElementById("lockbox");
+      document.getElementById("pwErr").textContent = "密码不对,再试一次";
+      document.getElementById("pwInput").value = "";
+      box.classList.remove("shake"); void box.offsetWidth; box.classList.add("shake");
+    }
+  }
+  document.getElementById("pwGo").onclick = tryUnlock;
+  document.getElementById("pwInput").addEventListener("keydown",
+      e=>{ if(e.key==="Enter") tryUnlock(); });
+  setTimeout(()=>document.getElementById("pwInput").focus(), 100);
+})();
 
 // 数据源状态摘要(有失败的源时醒目提示)
 (function(){
