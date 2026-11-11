@@ -601,6 +601,35 @@ def fetch_g_canada():
     return out
 
 
+def translate_zh(text):
+    """把外文标题机器翻译成繁体中文(免费接口,失败时返回空串)。"""
+    try:
+        url = ("https://translate.googleapis.com/translate_a/single"
+               "?client=gtx&sl=auto&tl=zh-TW&dt=t&q=" + urllib.parse.quote(text))
+        d = json.loads(http_get(url, timeout=15))
+        out = "".join(seg[0] for seg in d[0] if seg and seg[0])
+        return out.strip()
+    except Exception:
+        return ""
+
+
+def translate_global_titles(tenders):
+    """给全球标书补充繁体中文译名(title_zh),中文模式下看板显示译文。
+    国家前缀 [XX] 保留不译;翻译失败不影响主流程。"""
+    import time
+    done = 0
+    for t in tenders:
+        title = t.get("title") or ""
+        m = re.match(r"^(\[[^\]]+\]\s*)(.+)$", title, re.S)
+        prefix, body = (m.group(1), m.group(2)) if m else ("", title)
+        zh = translate_zh(body[:800])
+        if zh and zh != body:
+            t["title_zh"] = prefix + zh
+            done += 1
+        time.sleep(0.2)      # 轻微限速,避免触发封锁
+    print(f"  [OK] 全球标书标题翻译: {done}/{len(tenders)} 条已译为繁体中文")
+
+
 def fetch_global_all():
     tenders = []
     for name, fn in [("世界银行 (World Bank)", fetch_g_worldbank),
@@ -617,6 +646,10 @@ def fetch_global_all():
         except Exception as e:
             print(f"  [跳过] {name}: {e.__class__.__name__}")
             report(name, False, note=str(e.__class__.__name__))
+    try:
+        translate_global_titles(tenders)
+    except Exception as e:
+        print(f"  [跳过] 标题翻译: {e.__class__.__name__}")
     return tenders
 
 
@@ -1137,16 +1170,22 @@ function render(){
     if(mode==="rel" && t.score<=0) continue;
     if(mode==="star" && !stars[keyOf(t)]) continue;
     if(mode==="soon" && !(t.days_left!==null && t.days_left<=7)) continue;
-    const blob = (t.title+" "+(t.title_en||"")+" "+t.org+" "+t.ref+" "+t.source).toLowerCase();
+    const blob = (t.title+" "+(t.title_en||"")+" "+(t.title_zh||"")+" "+t.org+" "+t.ref+" "+t.source).toLowerCase();
     if(q && !blob.includes(q)) continue;
     shown++;
     const st = stars[keyOf(t)] ? "on":"";
-    // 英文模式优先显示英文标题(政府投标箱等源自带双语)
-    const shownTitle = (LANG==="en" && t.title_en) ? t.title_en : t.title;
+    // 英文模式优先显示英文标题;中文模式下全球标书优先显示繁体机器译名
+    let shownTitle = (LANG==="en" && t.title_en) ? t.title_en : t.title;
+    let origLine = "";
+    if(LANG!=="en" && t.title_zh){
+      shownTitle = t.title_zh;
+      origLine = '<div style="font-size:12px;color:#94a3b8;margin:2px 0 0 26px;">'+t.title+'</div>';
+    }
     html += '<div class="card '+(t.score>=4?'hot':'')+'">'
       +'<div class="row1"><div class="title">'
       +'<button class="star '+st+'" data-k="'+encodeURIComponent(keyOf(t))+'">★</button> '
       +'<a href="'+t.link+'" target="_blank">'+shownTitle+'</a></div>'+daysBadge(t)+'</div>'
+      +origLine
       +'<div class="row2">'
       +'<span class="tag src">'+t.source+'</span>'
       +(t.org?'<span class="tag">'+t.org+'</span>':'')
