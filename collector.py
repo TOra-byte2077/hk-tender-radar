@@ -50,7 +50,9 @@ DEFAULT_KEYWORDS = {
         "immersive", "沉浸", "虛擬實境", "虚拟现实", "擴增實境", "增强现实",
         "元宇宙", "metaverse"],
     4: ["exhibition", "展覽", "展览", "展廳", "展厅", "展亭", "pavilion",
-        "multimedia", "多媒體", "多媒体", "interactive", "互動", "互动"],
+        "multimedia", "多媒體", "多媒体", "interactive", "互動", "互动",
+        "pop-up", "快閃", "快闪", "brand activation", "experiential marketing",
+        "roadshow", "巡展", "路演", "brand experience", "品牌體驗"],
     3: ["museum", "博物館", "博物馆", "gallery", "展館", "美術館",
         "projection", "投影", "audio-visual", "audiovisual", " av ",
         "影音", "視聽", "视听", "digital content", "數碼內容",
@@ -377,6 +379,7 @@ NEWS_QUERIES = [
     ("招标新闻监控", '香港 (招標 OR 標書) (商場 OR 地產 OR 活動 OR 燈光 OR 文化)'),
     ("招标新闻监控", 'Hong Kong tender (mall OR property OR event OR attraction OR "theme park")'),
     ("招标新闻监控", '(西九 OR M+ OR 故宮 OR 康文署 OR 旅發局 OR 貿發局) 招標'),
+    ("招标新闻监控", '香港 (快閃 OR "pop-up" OR 品牌體驗) (招標 OR 標書 OR 徵集 OR proposal)'),
 ]
 
 
@@ -438,6 +441,16 @@ def collect():
     for fn in (fetch_gld, fetch_archsd, fetch_wkcda, fetch_hkstp,
                fetch_hkma, fetch_gov_press, fetch_news_rss):
         tenders.extend(fn())
+
+    # 全球标书源(世界银行/欧盟TED/英国/加拿大,只保留行业相关)
+    try:
+        import global_sources
+        gt, gs = global_sources.fetch_all(score_text)
+        tenders.extend(gt)
+        SOURCE_STATUS.extend(gs)
+    except Exception as e:
+        print(f"  [跳过] 全球标书源: {e.__class__.__name__}")
+        report("全球标书源", False, note=str(e.__class__.__name__)[:40])
 
     # 可选:浏览器自动化源(康文署等动态/反爬网站)
     # 本地没装 Playwright 会自动跳过;GitHub Actions 上自动启用
@@ -618,62 +631,63 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 <div id="lock" style="display:none">
   <div class="lockbox" id="lockbox">
     <div class="icon">🔒</div>
-    <h2>香港标书雷达</h2>
-    <p>此看板已加锁,请输入访问密码</p>
+    <h2>標書雷達 Tender Radar</h2>
+    <p>此看板已加鎖,請輸入訪問密碼<br>This dashboard is locked. Enter password.</p>
     <input type="password" id="pwInput" placeholder="········" autocomplete="off">
-    <button class="go" id="pwGo">解锁</button>
+    <button class="go" id="pwGo">解鎖 Unlock</button>
     <div class="err" id="pwErr"></div>
   </div>
 </div>
 <div class="wrap">
-  <h1>香港标书雷达 <span class="radar">◎</span></h1>
-  <div class="meta">最后更新:__UPDATED__ · 运行 collector.py 即可刷新数据 · <span id="srcStatus"></span></div>
+  <h1><span id="hTitle">標書雷達</span> <span class="radar">◎</span>
+      <span style="float:right"><span class="btn" id="langToggle" style="font-size:13px;padding:7px 14px">EN</span></span></h1>
+  <div class="meta"><span id="mUpdated">最後更新</span>:__UPDATED__ · <span id="mHint">運行 collector.py 即可刷新數據</span> · <span id="srcStatus"></span></div>
 
   <div class="stats">
-    <div class="stat"><b>__TOTAL__</b><span>进行中标书</span></div>
-    <div class="stat"><b style="color:var(--hot)">__REL__</b><span id="relLabel">__LABEL__ 相关</span></div>
-    <div class="stat"><b id="starCnt">0</b><span>已收藏</span></div>
+    <div class="stat"><b>__TOTAL__</b><span id="statTotal">進行中標書</span></div>
+    <div class="stat"><b style="color:var(--hot)">__REL__</b><span id="relLabel">__LABEL__ 相關</span></div>
+    <div class="stat"><b id="starCnt">0</b><span id="statStar">已收藏</span></div>
   </div>
 
   <div class="controls">
-    <input type="search" id="q" placeholder="搜索标题 / 部门 / 编号,如: 展覽、multimedia、博物館 …">
+    <input type="search" id="q" placeholder="搜尋標題 / 部門 / 編號,如: 展覽、multimedia、博物館 …">
     <div class="btn on" id="fAll">全部</div>
     <div class="btn" id="fRel">只看__LABEL__</div>
     <div class="btn" id="fStar">只看收藏</div>
-    <div class="btn" id="fSoon">7天内截标</div>
-    <div class="btn" id="kwToggle">⚙ 关键词设置</div>
+    <div class="btn" id="fSoon">7天內截標</div>
+    <div class="btn" id="kwToggle">⚙ 關鍵詞設置</div>
   </div>
 
   <div class="kwpanel" id="kwPanel">
-    <h3>自定义行业分类与关键词</h3>
-    <div class="hint">
-      标书标题命中任何关键词即视为「相关」,分数越高排序越靠前,总分≥4分的标书会有橙色高亮边。<br>
-      每个关键词用<b>逗号</b>分隔(中英文逗号都行),不分大小写。改完点「保存并应用」立即重新打分排序,设置保存在本浏览器中,下次重新生成看板后依然生效。
+    <h3 id="kpTitle">自定義行業分類與關鍵詞</h3>
+    <div class="hint" id="kpHint">
+      標書標題命中任何關鍵詞即視為「相關」,分數越高排序越靠前,總分≥4分的標書會有橙色高亮邊。<br>
+      每個關鍵詞用<b>逗號</b>分隔(中英文逗號都行),不分大小寫。改完點「保存並應用」立即重新打分排序,設置保存在本瀏覽器中,下次重新生成看板後依然生效。
     </div>
-    <div class="kwgroup"><label>分类名称 <em>(显示在统计卡和筛选按钮上,如:展览 / VR / AR、灯光秀、数字艺术…)</em></label>
+    <div class="kwgroup"><label id="lbLabel">分類名稱 <em>(顯示在統計卡和篩選按鈕上)</em></label>
       <input type="text" id="kwLabel" style="width:100%;background:var(--card2);color:var(--txt);
         border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;
         font-family:inherit;outline:none"></div>
-    <div class="kwgroup"><label>5 分 · 核心业务 <em>(最高优先,如 VR/AR/沉浸式)</em></label>
+    <div class="kwgroup"><label id="lb5">5 分 · 核心業務 <em>(如 VR/AR/沉浸式)</em></label>
       <textarea id="kw5"></textarea></div>
-    <div class="kwgroup"><label>4 分 · 高度相关 <em>(如 展览/多媒体/互动)</em></label>
+    <div class="kwgroup"><label id="lb4">4 分 · 高度相關 <em>(如 展覽/快閃/多媒體)</em></label>
       <textarea id="kw4"></textarea></div>
-    <div class="kwgroup"><label>3 分 · 相关 <em>(如 博物馆/投影/动画)</em></label>
+    <div class="kwgroup"><label id="lb3">3 分 · 相關 <em>(如 博物館/投影/動畫)</em></label>
       <textarea id="kw3"></textarea></div>
-    <div class="kwgroup"><label>2 分 · 沾边 <em>(如 活动制作/展示/LED)</em></label>
+    <div class="kwgroup"><label id="lb2">2 分 · 沾邊 <em>(如 活動製作/展示/LED)</em></label>
       <textarea id="kw2"></textarea></div>
     <div class="kwactions">
-      <div class="btn primary" id="kwSave">保存并应用</div>
-      <div class="btn danger" id="kwReset">恢复默认</div>
+      <div class="btn primary" id="kwSave">保存並應用</div>
+      <div class="btn danger" id="kwReset">恢復默認</div>
       <div class="btn" id="kwClose">收起</div>
     </div>
   </div>
 
   <div id="list"></div>
 
-  <div class="foot">
-    自动数据来源:政府物流服务署电子投标箱(官方开放数据)、建筑署、西九文化区 WKProcure、香港科技园、Google News 招标新闻监控。<br><br>
-    <b style="color:var(--txt)">公营机构补充源</b>(部分网站有反爬,建议每周手动看一次):
+  <div class="foot" id="footZh">
+    自動數據來源:政府電子投標箱、建築署、西九 WKProcure、科技園、金管局、政府新聞公報、Google News 監控、康文署(瀏覽器)、世界銀行、歐盟 TED、英國 Find a Tender、加拿大 CanadaBuys。<br><br>
+    <b style="color:var(--txt)">公營機構補充源</b>(部分網站有反爬,建議每週手動看一次):
     <a href="https://www.westk.hk/en/tender-notices-expression-interest-0" target="_blank">西九文化区官网</a> ·
     <a href="https://www.lcsd.gov.hk/clpss/tc/webApp/Tender.do" target="_blank">康文署招标/报价列表(博物馆展览大户)</a> ·
     <a href="https://www.lcsd.gov.hk/clpss/tc/webApp/NoticeList.do" target="_blank">康文署通知名单(加入报价邀请!)</a> ·
@@ -690,7 +704,47 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
     <a href="https://www.clpgroup.com/en/about/procurement.html" target="_blank">中电 CLP</a> ·
     <a href="https://www.feo.hku.hk/finance/suppliers/supplierportal.html" target="_blank">港大供应商门户</a> ·
     <a href="https://tenderking.hk/" target="_blank">标王 TenderKing(私企/学校/法团发标平台)</a> ·
-    <a href="https://brplatform.org.hk/en/e-tendering-platform" target="_blank">市建局 Smart Tender(楼宇工程)</a>
+    <a href="https://brplatform.org.hk/en/e-tendering-platform" target="_blank">市建局 Smart Tender(楼宇工程)</a><br><br>
+    <b style="color:var(--txt)">全球标书</b>(已自动抓取:世界银行、欧盟TED、英国、加拿大;以下需注册或手动查看):
+    <a href="https://sam.gov/search/?index=opp" target="_blank">美国 SAM.gov(免费注册)</a> ·
+    <a href="https://www.ungm.org/Public/Notice" target="_blank">联合国 UNGM</a> ·
+    <a href="https://devbusiness.un.org/" target="_blank">UN Development Business</a> ·
+    <a href="https://www.gebiz.gov.sg/" target="_blank">新加坡 GeBIZ</a> ·
+    <a href="https://www.tenders.gov.au/atm" target="_blank">澳洲 AusTender</a> ·
+    <a href="https://www.marches-publics.gouv.fr/" target="_blank">法国 PLACE</a> ·
+    <a href="https://www.evergabe-online.de/" target="_blank">德国 e-Vergabe</a> ·
+    <a href="https://www.dubaicustoms.gov.ae/en/Tenders" target="_blank">迪拜/中东各政府门户</a> ·
+    <a href="https://ted.europa.eu/en/" target="_blank">欧盟 TED 官网(手动搜更多)</a>
+  </div>
+
+  <div class="foot" id="footEn" style="display:none">
+    Automated sources: GLD e-Tender Box, ArchSD, WKCDA WKProcure, HKSTP, HKMA, ISD Press Releases, Google News monitoring, LCSD (browser), World Bank, EU TED, UK Find a Tender, CanadaBuys.<br><br>
+    <b style="color:var(--txt)">HK public bodies</b> (check weekly, some sites block robots):
+    <a href="https://www.westk.hk/en/tender-notices-expression-interest-0" target="_blank">WKCDA</a> ·
+    <a href="https://www.lcsd.gov.hk/en/aboutlcsd/services/tender.html" target="_blank">LCSD tender list</a> ·
+    <a href="https://home.hktdc.com/en/s/tender-notices" target="_blank">HKTDC</a> ·
+    <a href="https://www.cyberport.hk/en/about_cyberport/tender_notice" target="_blank">Cyberport</a> ·
+    <a href="https://www.discoverhongkong.com/eng/hktb/tenders.html" target="_blank">HKTB</a> ·
+    <a href="https://www.ha.org.hk" target="_blank">Hospital Authority</a><br><br>
+    <b style="color:var(--txt)">Supplier portals</b> (register once, invitations come to you):
+    <a href="https://www.hkextender.com" target="_blank">MTR</a> ·
+    <a href="https://suppliernetwork.hkjc.com/" target="_blank">HKJC EPRO</a> ·
+    <a href="https://tender.hkstp.org" target="_blank">HKSTP</a> ·
+    <a href="https://eproq.hkpc.org" target="_blank">HKPC ePROQ</a> ·
+    <a href="https://www.hongkongairport.com/en/business-partners/tender-notices/" target="_blank">Airport Authority</a> ·
+    <a href="https://www.clpgroup.com/en/about/procurement.html" target="_blank">CLP</a> ·
+    <a href="https://www.feo.hku.hk/finance/suppliers/supplierportal.html" target="_blank">HKU</a> ·
+    <a href="https://tenderking.hk/" target="_blank">TenderKing</a> ·
+    <a href="https://brplatform.org.hk/en/e-tendering-platform" target="_blank">URA Smart Tender</a><br><br>
+    <b style="color:var(--txt)">Global</b> (auto-fetched: World Bank, EU TED, UK, Canada; below need registration / manual check):
+    <a href="https://sam.gov/search/?index=opp" target="_blank">US SAM.gov</a> ·
+    <a href="https://www.ungm.org/Public/Notice" target="_blank">UNGM</a> ·
+    <a href="https://devbusiness.un.org/" target="_blank">UN Development Business</a> ·
+    <a href="https://www.gebiz.gov.sg/" target="_blank">Singapore GeBIZ</a> ·
+    <a href="https://www.tenders.gov.au/atm" target="_blank">AusTender</a> ·
+    <a href="https://www.marches-publics.gouv.fr/" target="_blank">France PLACE</a> ·
+    <a href="https://www.evergabe-online.de/" target="_blank">Germany e-Vergabe</a> ·
+    <a href="https://ted.europa.eu/en/" target="_blank">EU TED website</a>
   </div>
 </div>
 
@@ -721,7 +775,7 @@ const PW_HASH = "__PWHASH__";
     let h = "";
     try { h = await sha256(v); }
     catch(e){  // 极旧浏览器或非 https 环境无 SubtleCrypto,提示改用 https
-      document.getElementById("pwErr").textContent = "浏览器不支持,请用 https 链接打开";
+      document.getElementById("pwErr").textContent = "瀏覽器不支持,請用 https 鏈接打開 / Browser unsupported, use https";
       return;
     }
     if(h === PW_HASH){
@@ -730,7 +784,7 @@ const PW_HASH = "__PWHASH__";
       document.querySelector(".wrap").style.display = "";
     } else {
       const box = document.getElementById("lockbox");
-      document.getElementById("pwErr").textContent = "密码不对,再试一次";
+      document.getElementById("pwErr").textContent = "密碼不對,再試一次 / Wrong password, try again";
       document.getElementById("pwInput").value = "";
       box.classList.remove("shake"); void box.offsetWidth; box.classList.add("shake");
     }
@@ -741,19 +795,7 @@ const PW_HASH = "__PWHASH__";
   setTimeout(()=>document.getElementById("pwInput").focus(), 100);
 })();
 
-// 数据源状态摘要(有失败的源时醒目提示)
-(function(){
-  const el = document.getElementById("srcStatus");
-  if(!el || !SRC_STATUS.length) return;
-  const bad = SRC_STATUS.filter(s=>!s.ok);
-  const okTxt = SRC_STATUS.filter(s=>s.ok).map(s=>s.name+"("+s.count+")").join(" · ");
-  if(bad.length){
-    el.innerHTML = '<span style="color:#d64545">⚠ '+bad.map(s=>s.name).join("、")
-      +' 本次抓取失败,请到看板底部手动查看</span> · 正常源: '+okTxt;
-  } else {
-    el.textContent = "全部数据源正常: " + okTxt;
-  }
-})();
+// 数据源状态摘要由 updateSrcStatus() 按当前语言渲染(见下方 i18n 部分)
 let mode = "all";
 const $ = id => document.getElementById(id);
 let stars = {};
@@ -765,9 +807,97 @@ try { KW = JSON.parse(localStorage.getItem("hkkw")||"null"); } catch(e){}
 try { LABEL = localStorage.getItem("hklabel") || DEFAULT_LABEL; } catch(e){}
 if(!KW) KW = DEFAULT_KW;
 
+// ---------- 双语 i18n(繁體中文 / English) ----------
+let LANG = "zh";
+try { LANG = localStorage.getItem("hklang") || "zh"; } catch(e){}
+
+const I18N = {
+  zh: {
+    hTitle:"標書雷達", mUpdated:"最後更新", mHint:"運行 collector.py 即可刷新數據",
+    statTotal:"進行中標書", statStar:"已收藏",
+    rel: l => l + " 相關", fRelTxt: l => "只看" + l,
+    qPh:"搜尋標題 / 部門 / 編號,如: 展覽、multimedia、博物館 …",
+    fAll:"全部", fStar:"只看收藏", fSoon:"7天內截標", kwToggle:"⚙ 關鍵詞設置",
+    kpTitle:"自定義行業分類與關鍵詞",
+    kpHint:"標書標題命中任何關鍵詞即視為「相關」,分數越高排序越靠前,總分≥4分的標書會有橙色高亮邊。<br>每個關鍵詞用<b>逗號</b>分隔(中英文逗號都行),不分大小寫。改完點「保存並應用」立即重新打分排序,設置保存在本瀏覽器中,下次重新生成看板後依然生效。",
+    lbLabel:"分類名稱 <em>(顯示在統計卡和篩選按鈕上)</em>",
+    lb5:"5 分 · 核心業務 <em>(如 VR/AR/沉浸式)</em>",
+    lb4:"4 分 · 高度相關 <em>(如 展覽/快閃/多媒體)</em>",
+    lb3:"3 分 · 相關 <em>(如 博物館/投影/動畫)</em>",
+    lb2:"2 分 · 沾邊 <em>(如 活動製作/展示/LED)</em>",
+    kwSave:"保存並應用", kwSaved:"✓ 已應用", kwReset:"恢復默認", kwClose:"收起",
+    daysLeft: d => "剩 " + d + " 天", noDeadline:"截標日期見公告",
+    closes:"截標 ", hits:"命中: ", empty:"沒有符合條件的標書",
+    srcOk:"全部數據源正常: ", srcBad: names => "⚠ " + names + " 本次抓取失敗,請到看板底部手動查看",
+    srcNormal:" · 正常源: ", langBtn:"EN"
+  },
+  en: {
+    hTitle:"Tender Radar", mUpdated:"Last updated", mHint:"run collector.py to refresh",
+    statTotal:"open tenders", statStar:"starred",
+    rel: l => l + " related", fRelTxt: l => l + " only",
+    qPh:"Search title / buyer / ref, e.g. exhibition, multimedia, museum …",
+    fAll:"All", fStar:"Starred", fSoon:"Closing ≤7 days", kwToggle:"⚙ Keywords",
+    kpTitle:"Customise category & keywords",
+    kpHint:"A tender is \"related\" when its title matches any keyword; higher total score ranks higher, and a score ≥4 gets an orange highlight.<br>Separate keywords with <b>commas</b>, case-insensitive. Click \"Save & apply\" to re-score instantly. Settings are stored in this browser and survive dashboard refreshes.",
+    lbLabel:"Category name <em>(shown on the stat card & filter button)</em>",
+    lb5:"5 pts · Core business <em>(e.g. VR/AR/immersive)</em>",
+    lb4:"4 pts · Highly related <em>(e.g. exhibition/pop-up/multimedia)</em>",
+    lb3:"3 pts · Related <em>(e.g. museum/projection/animation)</em>",
+    lb2:"2 pts · Peripheral <em>(e.g. event production/display/LED)</em>",
+    kwSave:"Save & apply", kwSaved:"✓ Applied", kwReset:"Reset", kwClose:"Close",
+    daysLeft: d => d + (d===1?" day left":" days left"), noDeadline:"See notice",
+    closes:"Closes ", hits:"Hits: ", empty:"No tenders match",
+    srcOk:"All sources OK: ", srcBad: names => "⚠ " + names + " failed this run — check manually via links below",
+    srcNormal:" · OK: ", langBtn:"繁"
+  }
+};
+function L(){ return I18N[LANG]; }
+
+function updateSrcStatus(){
+  const el = $("srcStatus");
+  if(!el || !SRC_STATUS.length) return;
+  const bad = SRC_STATUS.filter(s=>!s.ok);
+  const okTxt = SRC_STATUS.filter(s=>s.ok).map(s=>s.name+"("+s.count+")").join(" · ");
+  if(bad.length){
+    el.innerHTML = '<span style="color:#d64545">'+L().srcBad(bad.map(s=>s.name).join("、"))
+      +'</span>'+L().srcNormal+okTxt;
+  } else {
+    el.textContent = L().srcOk + okTxt;
+  }
+}
+
+function applyLang(){
+  const t = L();
+  $("hTitle").textContent = t.hTitle;
+  $("mUpdated").textContent = t.mUpdated;
+  $("mHint").textContent = t.mHint;
+  $("statTotal").textContent = t.statTotal;
+  $("statStar").textContent = t.statStar;
+  $("q").placeholder = t.qPh;
+  $("fAll").textContent = t.fAll;
+  $("fStar").textContent = t.fStar;
+  $("fSoon").textContent = t.fSoon;
+  $("kwToggle").textContent = t.kwToggle;
+  $("kpTitle").textContent = t.kpTitle;
+  $("kpHint").innerHTML = t.kpHint;
+  $("lbLabel").innerHTML = t.lbLabel;
+  $("lb5").innerHTML = t.lb5;
+  $("lb4").innerHTML = t.lb4;
+  $("lb3").innerHTML = t.lb3;
+  $("lb2").innerHTML = t.lb2;
+  $("kwSave").textContent = t.kwSave;
+  $("kwReset").textContent = t.kwReset;
+  $("kwClose").textContent = t.kwClose;
+  $("langToggle").textContent = t.langBtn;
+  $("footZh").style.display = (LANG==="zh") ? "" : "none";
+  $("footEn").style.display = (LANG==="en") ? "" : "none";
+  applyLabel();
+  updateSrcStatus();
+}
+
 function applyLabel(){
-  $("relLabel").textContent = LABEL + " 相关";
-  $("fRel").textContent = "只看" + LABEL;
+  $("relLabel").textContent = L().rel(LABEL);
+  $("fRel").textContent = L().fRelTxt(LABEL);
 }
 
 function rescore(){
@@ -810,10 +940,11 @@ function keyOf(t){ return t.ref || t.title.slice(0,60); }
 
 function daysBadge(t){
   if(t.days_left===null || t.days_left===undefined)
-      return '<span class="days d-none">截标日期见公告</span>';
-  if(t.days_left<=3) return '<span class="days d-urgent">剩 '+t.days_left+' 天</span>';
-  if(t.days_left<=7) return '<span class="days d-soon">剩 '+t.days_left+' 天</span>';
-  return '<span class="days d-ok">剩 '+t.days_left+' 天</span>';
+      return '<span class="days d-none">'+L().noDeadline+'</span>';
+  const txt = L().daysLeft(t.days_left);
+  if(t.days_left<=3) return '<span class="days d-urgent">'+txt+'</span>';
+  if(t.days_left<=7) return '<span class="days d-soon">'+txt+'</span>';
+  return '<span class="days d-ok">'+txt+'</span>';
 }
 
 function render(){
@@ -828,20 +959,22 @@ function render(){
     if(q && !blob.includes(q)) continue;
     shown++;
     const st = stars[keyOf(t)] ? "on":"";
+    // 英文模式优先显示英文标题(政府投标箱等源自带双语)
+    const shownTitle = (LANG==="en" && t.title_en) ? t.title_en : t.title;
     html += '<div class="card '+(t.score>=4?'hot':'')+'">'
       +'<div class="row1"><div class="title">'
       +'<button class="star '+st+'" data-k="'+encodeURIComponent(keyOf(t))+'">★</button> '
-      +'<a href="'+t.link+'" target="_blank">'+t.title+'</a></div>'+daysBadge(t)+'</div>'
+      +'<a href="'+t.link+'" target="_blank">'+shownTitle+'</a></div>'+daysBadge(t)+'</div>'
       +'<div class="row2">'
       +'<span class="tag src">'+t.source+'</span>'
       +(t.org?'<span class="tag">'+t.org+'</span>':'')
       +(t.ref?'<span class="tag">'+t.ref+'</span>':'')
-      +(t.closing?'<span class="tag">截标 '+t.closing+'</span>':'')
-      +(t.hits&&t.hits.length?'<span class="tag kw">命中: '+t.hits.join("、")+'</span>':'')
+      +(t.closing?'<span class="tag">'+L().closes+t.closing+'</span>':'')
+      +(t.hits&&t.hits.length?'<span class="tag kw">'+L().hits+t.hits.join("、")+'</span>':'')
       +(t.contact?'<span class="tag">'+t.contact+'</span>':'')
       +'</div></div>';
   }
-  list.innerHTML = html || '<div class="empty">没有符合条件的标书</div>';
+  list.innerHTML = html || '<div class="empty">'+L().empty+'</div>';
   $("starCnt").textContent = Object.keys(stars).filter(k=>stars[k]).length;
   document.querySelectorAll(".star").forEach(b=>{
     b.onclick = e=>{
@@ -879,8 +1012,8 @@ $("kwSave").onclick = ()=>{
     localStorage.setItem("hklabel", LABEL);
   }catch(e){}
   applyLabel(); rescore(); render();
-  $("kwSave").textContent = "✓ 已应用";
-  setTimeout(()=> $("kwSave").textContent = "保存并应用", 1200);
+  $("kwSave").textContent = L().kwSaved;
+  setTimeout(()=> $("kwSave").textContent = L().kwSave, 1200);
 };
 $("kwReset").onclick = ()=>{
   KW = DEFAULT_KW; LABEL = DEFAULT_LABEL;
@@ -888,7 +1021,14 @@ $("kwReset").onclick = ()=>{
   fillPanel(); applyLabel(); rescore(); render();
 };
 
-applyLabel();
+// ---------- 语言切换 ----------
+$("langToggle").onclick = ()=>{
+  LANG = (LANG==="zh") ? "en" : "zh";
+  try{ localStorage.setItem("hklang", LANG); }catch(e){}
+  applyLang(); render();
+};
+
+applyLang();
 rescore();
 render();
 </script>
