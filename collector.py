@@ -433,6 +433,194 @@ def fetch_news_rss():
 
 
 # ---------------------------------------------------------------
+# 全球标书源(内嵌模块):世界银行 / 欧盟 TED / 英国 / 加拿大
+# 全球数据量巨大,只保留命中行业关键词(keywords.json)的标书
+# ---------------------------------------------------------------
+GLOBAL_CAP = 40          # 每个全球源最多保留条数
+WB_QUERIES = ["museum exhibition", "virtual reality", "audio visual",
+              "visitor center interactive", "multimedia exhibition"]
+# TED 用 CPV 行业分类码检索(语言无关): 博物馆服务/展览组织/展览设备/
+# 展台/视听器材/多媒体设备/艺术服务/多媒体软件开发
+TED_CPV = "92521000 79956000 39154000 39154100 32321300 32322000 92312000 72212520"
+
+
+def _http_post_json(url, payload, timeout=30):
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(),
+        headers={"User-Agent": UA, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+        return json.loads(r.read())
+
+
+def _gmk(source, org, ref, title, closing, link, issue=""):
+    return {"source": source, "org": org, "ref": ref, "title": title,
+            "title_en": "", "issue_date": issue, "closing": closing,
+            "link": link, "contact": ""}
+
+
+def fetch_g_worldbank():
+    out, seen = [], set()
+    for q in WB_QUERIES:
+        try:
+            url = ("https://search.worldbank.org/api/v2/procnotices?format=json"
+                   "&rows=30&notice_status=Published&qterm=" + urllib.parse.quote(q))
+            d = json.loads(http_get(url))
+            for n in d.get("procnotices", []):
+                nid = str(n.get("id") or "")
+                if not nid or nid in seen:
+                    continue
+                seen.add(nid)
+                title = str(n.get("bid_description") or n.get("project_name") or "").strip()
+                if not title:
+                    continue
+                s, _ = score_text(title)
+                if s <= 0:
+                    continue
+                deadline = str(n.get("submission_deadline_date") or "")[:10]
+                if deadline and deadline < date.today().isoformat():
+                    continue
+                if not deadline:
+                    try:
+                        pub = datetime.strptime(str(n.get("noticedate") or ""),
+                                                "%d-%b-%Y").date()
+                        if (date.today() - pub).days > 120:
+                            continue
+                    except ValueError:
+                        continue
+                country = str(n.get("project_ctry_name") or "")
+                out.append(_gmk("世界银行 (World Bank)", country,
+                                str(n.get("bid_reference_no") or nid),
+                                f"[{country}] {title}", deadline,
+                                "https://projects.worldbank.org/en/projects-operations/procurement-detail/" + nid))
+        except Exception:
+            continue
+    return out
+
+
+def fetch_g_ted():
+    out = []
+    from datetime import timedelta
+    since = (date.today() - timedelta(days=45)).strftime("%Y%m%d")
+    try:
+        d = _http_post_json("https://api.ted.europa.eu/v3/notices/search", {
+            "query": f"classification-cpv IN ({TED_CPV}) AND publication-date>={since}",
+            "fields": ["notice-title", "publication-number", "buyer-name",
+                       "buyer-country", "publication-date",
+                       "deadline-receipt-tender-date-lot"],
+            "limit": 100})
+        for n in d.get("notices", []):
+            tt = n.get("notice-title") or {}
+            title = tt.get("eng") or (list(tt.values())[0] if tt else "")
+            if isinstance(title, list):
+                title = title[0] if title else ""
+            title = str(title).strip()
+            if not title:
+                continue
+            country = n.get("buyer-country")
+            if isinstance(country, list):
+                country = country[0] if country else ""
+            dl = n.get("deadline-receipt-tender-date-lot")
+            if isinstance(dl, list):
+                dl = dl[0] if dl else ""
+            closing = str(dl or "")[:10]
+            if closing and closing < date.today().isoformat():
+                continue
+            buyer = n.get("buyer-name") or {}
+            if isinstance(buyer, dict):
+                bv = buyer.get("eng") or (list(buyer.values())[0] if buyer else "")
+                buyer = bv[0] if isinstance(bv, list) and bv else bv
+            pub = str(n.get("publication-number") or "")
+            out.append(_gmk("欧盟 TED", str(buyer or country or ""), pub,
+                            f"[{country}] {title}", closing,
+                            "https://ted.europa.eu/en/notice/-/detail/" + pub,
+                            str(n.get("publication-date") or "")[:10]))
+    except Exception:
+        pass
+    return out
+
+
+def fetch_g_uk():
+    out = []
+    try:
+        d = json.loads(http_get(
+            "https://www.find-tender.service.gov.uk/api/1.0/ocdsReleasePackages?limit=100"))
+        for rel in d.get("releases", []):
+            tender = rel.get("tender") or {}
+            title = str(tender.get("title") or "").strip()
+            if not title:
+                continue
+            s, _ = score_text(title)
+            if s <= 0:
+                continue
+            status = str(tender.get("status") or "").lower()
+            if status in ("complete", "cancelled", "unsuccessful", "withdrawn"):
+                continue
+            closing = str((tender.get("tenderPeriod") or {}).get("endDate") or "")[:10]
+            if closing and closing < date.today().isoformat():
+                continue
+            buyer = str((rel.get("buyer") or {}).get("name") or "")
+            out.append(_gmk("英国 Find a Tender", buyer, str(rel.get("ocid") or ""),
+                            f"[UK] {title}", closing,
+                            "https://www.find-tender.service.gov.uk/Search/Results?Keywords=" +
+                            urllib.parse.quote(title[:60])))
+    except Exception:
+        pass
+    return out
+
+
+def fetch_g_canada():
+    out = []
+    try:
+        import csv as _csv
+        import io
+        raw = http_get("https://canadabuys.canada.ca/opendata/pub/"
+                       "openTenderNotice-ouvertAvisAppelOffres.csv", timeout=60)
+        rd = _csv.DictReader(io.StringIO(raw.decode("utf-8-sig", "ignore")))
+        for row in rd:
+            title = str(row.get("title-titre-eng") or "").strip()
+            if not title:
+                continue
+            s, _ = score_text(title)
+            if s <= 0:
+                continue
+            if str(row.get("tenderStatus-appelOffresStatut-eng") or "").lower() != "open":
+                continue
+            closing = str(row.get("tenderClosingDate-appelOffresDateCloture") or "")[:10]
+            if closing and closing < date.today().isoformat():
+                continue
+            out.append(_gmk("加拿大 CanadaBuys", "加拿大政府",
+                            str(row.get("referenceNumber-numeroReference") or ""),
+                            f"[CA] {title}", closing,
+                            str(row.get("noticeURL-URLavis-eng") or
+                                "https://canadabuys.canada.ca/en/tender-opportunities")))
+    except Exception:
+        pass
+    return out
+
+
+def fetch_global_all():
+    tenders = []
+    for name, fn in [("世界银行 (World Bank)", fetch_g_worldbank),
+                     ("欧盟 TED", fetch_g_ted),
+                     ("英国 Find a Tender", fetch_g_uk),
+                     ("加拿大 CanadaBuys", fetch_g_canada)]:
+        try:
+            got = fn()
+            got.sort(key=lambda t: t.get("closing") or "9999")
+            got = got[:GLOBAL_CAP]
+            tenders.extend(got)
+            print(f"  [OK] {name}: {len(got)} 条(行业相关)")
+            report(name, True, len(got))
+        except Exception as e:
+            print(f"  [跳过] {name}: {e.__class__.__name__}")
+            report(name, False, note=str(e.__class__.__name__))
+    return tenders
+
+
+# ---------------------------------------------------------------
 # 汇总、打分、去重、排序
 # ---------------------------------------------------------------
 def collect():
@@ -443,14 +631,8 @@ def collect():
         tenders.extend(fn())
 
     # 全球标书源(世界银行/欧盟TED/英国/加拿大,只保留行业相关)
-    try:
-        import global_sources
-        gt, gs = global_sources.fetch_all(score_text)
-        tenders.extend(gt)
-        SOURCE_STATUS.extend(gs)
-    except Exception as e:
-        print(f"  [跳过] 全球标书源: {e.__class__.__name__}")
-        report("全球标书源", False, note=str(e.__class__.__name__)[:40])
+    # 代码已内嵌在本文件(见 fetch_global_all),无需单独的 global_sources.py
+    tenders.extend(fetch_global_all())
 
     # 可选:浏览器自动化源(康文署等动态/反爬网站)
     # 本地没装 Playwright 会自动跳过;GitHub Actions 上自动启用
